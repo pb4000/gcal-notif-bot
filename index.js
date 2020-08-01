@@ -72,6 +72,9 @@ async function main(credentials) {
         if (message.author.id !== client.user.id) {
             // if the message is from a guild
             if (message.channel.type !== 'dm') {
+                if (message.content.indexOf('!bot')) {
+                    message.channel.send(message.content.substring(5));
+                }
                 // otherwise the message is a dm
             } else {
                 // if dm message is a token code
