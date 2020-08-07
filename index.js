@@ -9,10 +9,11 @@
 const Discord = require('discord.js'),
     fs = require('fs'),
     mongoose = require('mongoose'),
-    { google } = require('googleapis'),
-    discordHandler = require('./scripts/discord-handler.js'),
-    calendarHandler = require('./scripts/calendar-handler'),
-    Guild = require('./models/Guild');
+    auth = require('./scripts/auth'),
+    guilds = require('./scripts/guilds'),
+    events = require('./scripts/events'),
+    Guild = require('./models/Guild'),
+    EventEmitter = require('events');
 
 
 // read credentials and login to discord
@@ -29,9 +30,16 @@ fs.readFile('credentials.json', (err, content) => {
 });
 
 async function main(credentials) {
-    // init vars
+    // init discord vars
     const client = new Discord.Client(),
         SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
+    // init event vars for gcal events
+    class Emitter extends EventEmitter { };
+    const eventEmitter = new Emitter();
+
+    /**
+     * ======AUTH======
+     */
 
     // ===DISCORD===
     // login the client with discord bot token
@@ -45,86 +53,38 @@ async function main(credentials) {
         useCreateIndex: true,
         useUnifiedTopology: true
     }).then(() => {
-        console.log('Connected to db');
+        console.log('Connected to db\n\n==========\n\n');
     });
 
     // ===GCAL===
 
-    // get a token for each calendar
-    const tokens = await Guild.find({}, (err, guilds) => {
+    // get the db entry for each guild
+    const emptyGuilds = await Guild.find({}, (err, guildsOut) => {
         if (err) return console.log(err);
-        console.log('Retreived guilds');
-        return guilds;
+        console.log('Retreived empty guilds\n\n==========\n\n');
+        return guildsOut;
     });
     // create oAuth clients with each token
-    let oAuthClients = calendarHandler.authenticateTokens(credentials.gcal, tokens);
-    console.log('Authenticated tokens');
+    const guildList = auth.populateGuildList(credentials.gcal, emptyGuilds);
+    console.log('Authenticated tokens\n\n==========\n\n');
+
+    // retrieve events from each calendar and fill them into the guildList
+    // for each guild
+    console.log('Retrieving events...\n----------');
+    await guilds.populateGuildEvents(guildList);
+    console.log('Retrieved events\n\n==========\n\n');
 
     /**
-     * ======DISCORD EVENTS======
+     * ======EVENTS======
      */
 
-    /**
-     * When receiving a new message
-     */
-    client.on('message', message => {
-        // if the message is not sent by the bot
-        if (message.author.id !== client.user.id) {
-            // if the message is from a guild
-            if (message.channel.type !== 'dm') {
-                if (message.content.indexOf('!bot') !== -1) {
-                    message.channel.send(message.content.substring(5));
-                }
-                // otherwise the message is a dm
-            } else {
-                // if dm message is a token code
-                if (message.content.substring(0, 7).trim() == '!token') {
-                    /**
-                     * Handle a token command
-                     */
-                    oAuthClients = discordHandler.handleToken(message, oAuthClients);
-                } else if (message.content.substring(0, 14).trim() == '!authenticate') {
-                    // verify server owner, delete previous entries, send new auth link
-                }
-            }
-        }
+    // ===DISCORD===
+    events.initEvents(client, guildList, credentials, SCOPES);
+
+    // ===GOOGLE CALENDAR===
+    // when a new calendar event is created, add the event to array of cached events?
+    eventEmitter.on('new-calendar-event', (event) => {
     });
 
-    /**
-     * When joining a new guild
-     */
-    client.on('guildCreate', async guild => {
-        console.log('Joined guild: ' + guild.name);
-        // add guild and its owner's ids to Guild DB, as well as link the calendar
-        Guild.create({
-            guildId: guild.id,
-            ownerId: guild.ownerID,
-        }, (err) => {
-            if (err) return console.log('Failed to add new unfinished guild to db.');
-            // add new oAuthClient to oAuthClients array
-            oAuthClients.push({
-                guildId: guild.id,
-                ownerId: guild.ownerID,
-                oAuth2Client: calendarHandler.newOAuth2Client(credentials.gcal)
-            });
-            // prompt guild owner to provide a token for their google calendar
-            guild.owner.send('Authorize this app by visiting: ' + oAuthClients[oAuthClients.length - 1].oAuth2Client.generateAuthUrl({
-                access_type: 'offline',
-                scope: SCOPES
-            }));
-            guild.owner.send("Please reply here with '!token <token> --server " + guild.id + "' with <token> being the code you received from the link.");
-        });
-    });
-
-    /**
-     * When leaving a guild
-     */
-    client.on('guildDelete', guild => {
-        console.log('Guild left: ' + guild.name);
-        calendarHandler.deleteGuild(guild.id, guild.ownerID);
-    });
-
-    client.once('ready', () => {
-        console.log('Ready!');
-    });
+    console.log('Done!\n\n');
 }
